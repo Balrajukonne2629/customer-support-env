@@ -1,5 +1,16 @@
 # 🎫 Customer Support Triage — OpenEnv
 
+---
+title: Customer Support Triage
+emoji: 🎫
+colorFrom: blue
+colorTo: purple
+sdk: docker
+app_port: 7860
+tags:
+  - openenv
+pinned: false
+---
 [![OpenEnv](https://img.shields.io/badge/OpenEnv-1.0.0-blue)](https://openenv.ai)
 [![Python](https://img.shields.io/badge/Python-3.11+-green)](https://python.org)
 [![Docker](https://img.shields.io/badge/Docker-ready-blue)](https://docker.com)
