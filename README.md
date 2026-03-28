@@ -1,5 +1,8 @@
-# 🎫 Customer Support Triage — OpenEnv
+head -5 README.md
+```
 
+If it doesn't start with exactly `---`, open `README.md` in **Notepad** or VS Code and make sure the **very first 3 characters** of the file are `---` with nothing before them (no blank line, no space):
+```
 ---
 title: Customer Support Triage
 emoji: 🎫
@@ -11,6 +14,7 @@ tags:
   - openenv
 pinned: false
 ---
+# 🎫 Customer Support Triage — OpenEnv
 [![OpenEnv](https://img.shields.io/badge/OpenEnv-1.0.0-blue)](https://openenv.ai)
 [![Python](https://img.shields.io/badge/Python-3.11+-green)](https://python.org)
 [![Docker](https://img.shields.io/badge/Docker-ready-blue)](https://docker.com)
