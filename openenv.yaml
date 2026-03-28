@@ -1,0 +1,132 @@
+id: customer-support-triage-v1
+name: Customer Support Ticket Triage & Resolution
+version: "1.0.0"
+description: >
+  A real-world OpenEnv environment where AI agents manage a queue of
+  customer support tickets for a SaaS company. Agents must classify tickets
+  by type, assign priority and department routing, and compose professional
+  customer replies. Directly applicable to enterprise support automation,
+  agent benchmarking, and RLHF for customer-facing LLMs.
+
+domain: customer_support
+tags:
+  - openenv
+  - customer-support
+  - nlp
+  - classification
+  - generation
+  - real-world
+  - rlhf
+
+tasks:
+  - id: task1
+    name: Ticket Classification
+    difficulty: easy
+    description: Classify incoming tickets into the correct category (billing / technical / account / general / feature_request)
+    num_tickets: 7
+    scoring: exact_match
+    score_range: [0.0, 1.0]
+
+  - id: task2
+    name: Priority & Routing
+    difficulty: medium
+    description: Assign urgency priority and route tickets to the correct support department
+    num_tickets: 5
+    scoring: weighted_priority_routing
+    score_range: [0.0, 1.0]
+
+  - id: task3
+    name: Full Ticket Resolution
+    difficulty: hard
+    description: Classify, prioritize, route, and write a complete empathetic customer response for complex tickets
+    num_tickets: 3
+    scoring: full_resolution
+    score_range: [0.0, 1.0]
+
+observation_space:
+  type: object
+  fields:
+    ticket:
+      type: object
+      description: The current customer support ticket (id, subject, body, customer_tier, sla_hours)
+    task_id: string
+    task_description: string
+    current_ticket_index: integer
+    total_tickets: integer
+    current_step: integer
+    max_steps: integer
+    completed_actions: list[string]
+    score_so_far: float
+    valid_action_types: list[string]
+    context: object
+
+action_space:
+  type: object
+  fields:
+    action_type:
+      type: enum
+      values: [classify, prioritize, route, respond, skip]
+    category:
+      type: enum
+      values: [billing, technical, account, general, feature_request]
+      required_for: classify
+    priority:
+      type: enum
+      values: [urgent, high, medium, low]
+      required_for: prioritize
+    department:
+      type: enum
+      values: [billing_team, tech_support, account_management, general_support]
+      required_for: route
+    response_text:
+      type: string
+      required_for: respond
+
+reward:
+  type: shaped
+  range: [-0.2, 1.0]
+  description: >
+    Incremental reward on each correct action. Partial credit for adjacent
+    priority levels. Response quality scored on length, keyword coverage,
+    professionalism, and empathy. Small penalties for wrong answers and skips.
+
+endpoints:
+  reset:
+    method: POST
+    path: /reset
+    body: { task_id: string }
+    returns: Observation
+
+  step:
+    method: POST
+    path: /step
+    body: Action
+    returns: StepResult
+
+  state:
+    method: GET
+    path: /state
+    returns: EnvironmentState
+
+  health:
+    method: GET
+    path: /health
+    returns: { status: string }
+
+baseline:
+  script: inference.py
+  model: gpt-4o-mini
+  scores:
+    task1: 0.71
+    task2: 0.68
+    task3: 0.52
+
+docker:
+  base_image: python:3.11-slim
+  port: 7860
+  health_check: /health
+
+huggingface:
+  space: true
+  sdk: docker
+  tag: openenv
