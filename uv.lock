@@ -1,0 +1,7 @@
+version = 1
+requires-python = ">=3.11"
+
+[[package]]
+name = "customer-support-triage"
+version = "1.0.0"
+source = { editable = "." }

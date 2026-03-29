@@ -13,11 +13,12 @@ dependencies = [
     "pydantic",
     "openai",
     "requests",
+    "openenv-core>=0.2.0",
 ]
 
-[project.optional-dependencies]
-dev = ["pytest"]
+[project.scripts]
+serve = "server.app:app"
 
 [tool.openenv]
 env_id = "customer-support-triage-v1"
-entry_point = "app:app"
+entry_point = "server.app:app"
