@@ -1,3 +1,4 @@
+
 ---
 title: Customer Support Triage
 emoji: 🎫
@@ -5,11 +6,8 @@ colorFrom: blue
 colorTo: purple
 sdk: docker
 app_port: 7860
-tags:
-  - openenv
 pinned: false
 ---
-
 # Customer Support Triage OpenEnv
 
 An OpenEnv environment for AI agents to manage customer support tickets.
