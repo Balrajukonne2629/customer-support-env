@@ -5,3 +5,11 @@ requires-python = ">=3.11"
 name = "customer-support-triage"
 version = "1.0.0"
 source = { editable = "." }
+dependencies = [
+    { name = "fastapi" },
+    { name = "uvicorn" },
+    { name = "pydantic" },
+    { name = "openai" },
+    { name = "requests" },
+    { name = "openenv-core" },
+]

@@ -4,6 +4,7 @@ from enum import Enum
 from typing import Any, Dict, List, Optional
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, Field
+import uvicorn
 
 # ── Enums ──────────────────────────────────────────────────────────────────
 class TicketCategory(str, Enum):
@@ -114,7 +115,6 @@ TASKS = {
     "task3": {"id":"task3","name":"Full Ticket Resolution","difficulty":"hard","description":"Classify, prioritize, route, and write a full response for each ticket","valid_action_types":["classify","prioritize","route","respond","skip"],"tickets":TASK3_TICKETS,"max_steps":20,"reward_config":{"correct_classify":0.20/len(TASK3_TICKETS),"correct_priority":0.20/len(TASK3_TICKETS),"correct_routing":0.20/len(TASK3_TICKETS),"response_quality_max":0.40/len(TASK3_TICKETS),"wrong_any":-0.02}},
 }
 
-# ── Scoring helpers ──────────────────────────────────────────────────────────
 PRIORITY_ORDER = ["urgent", "high", "medium", "low"]
 
 def priority_score(pred: str, correct: str) -> float:
@@ -332,6 +332,12 @@ def state():
 def root():
     return {"message": "Customer Support Triage OpenEnv", "docs": "/docs", "health": "/health", "tasks": "/tasks"}
 
+
+# ── Entry point ──────────────────────────────────────────────────────────────
+def main():
+    """Main entry point for the OpenEnv server."""
+    uvicorn.run("server.app:app", host="0.0.0.0", port=7860, reload=False)
+
+
 if __name__ == "__main__":
-    import uvicorn
-    uvicorn.run("app:app", host="0.0.0.0", port=7860)
+    main()
