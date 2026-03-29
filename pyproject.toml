@@ -1,0 +1,23 @@
+[build-system]
+requires = ["setuptools>=68.0"]
+build-backend = "setuptools.backends.legacy:build"
+
+[project]
+name = "customer-support-triage"
+version = "1.0.0"
+description = "OpenEnv environment for customer support ticket triage and resolution"
+requires-python = ">=3.11"
+dependencies = [
+    "fastapi",
+    "uvicorn",
+    "pydantic",
+    "openai",
+    "requests",
+]
+
+[project.optional-dependencies]
+dev = ["pytest"]
+
+[tool.openenv]
+env_id = "customer-support-triage-v1"
+entry_point = "app:app"
