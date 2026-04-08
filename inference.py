@@ -1,23 +1,18 @@
 """
-inference.py — Baseline inference script for Customer Support Triage OpenEnv.
+inference.py — Customer Support Triage OpenEnv
+Baseline inference script using OpenAI client.
 
-Uses the OpenAI client to run an LLM agent against all three tasks and
-produces reproducible baseline scores.
+Required env vars:
+  API_BASE_URL  — LLM API endpoint
+  MODEL_NAME    — model identifier
+  HF_TOKEN      — API key
 
-Environment variables required:
-  API_BASE_URL   — LLM API endpoint (OpenAI-compatible)
-  MODEL_NAME     — Model identifier
-  HF_TOKEN       — Hugging Face / API key (used as API key)
-
-Usage:
-  python inference.py
-  python inference.py --task task1        # single task
-  python inference.py --host http://localhost:7860  # custom env URL
+Emits structured stdout:
+  [START] task=<name> env=<benchmark> model=<model>
+  [STEP]  step=<n> action=<action> reward=<0.00> done=<true|false> error=<msg|null>
+  [END]   success=<true|false> steps=<n> score=<0.000> rewards=<r1,r2,...>
 """
 
-from __future__ import annotations
-
-import argparse
 import json
 import os
 import sys
@@ -27,107 +22,102 @@ from typing import Any, Dict, List, Optional
 import requests
 from openai import OpenAI
 
-# ---------------------------------------------------------------------------
-# Configuration
-# ---------------------------------------------------------------------------
+# ── Configuration ────────────────────────────────────────────────────────────
+API_BASE_URL: str = os.getenv("API_BASE_URL", "https://api.openai.com/v1")
+MODEL_NAME: str = os.getenv("MODEL_NAME", "gpt-4o-mini")
+HF_TOKEN: str = os.getenv("HF_TOKEN", "")
+ENV_HOST: str = os.getenv("ENV_HOST", "http://localhost:7860")
 
-API_BASE_URL: str = os.environ.get("API_BASE_URL", "https://api.openai.com/v1")
-MODEL_NAME: str = os.environ.get("MODEL_NAME", "gpt-4o-mini")
-HF_TOKEN: str = os.environ.get("HF_TOKEN", "")
-ENV_HOST: str = os.environ.get("ENV_HOST", "http://localhost:7860")
-
-TEMPERATURE: float = 0.0   # deterministic for reproducibility
+TEMPERATURE: float = 0.0
 MAX_TOKENS: int = 512
-MAX_STEPS: int = 30         # safety cap
+MAX_STEPS: int = 25
+SUCCESS_THRESHOLD: float = 0.5
+BENCHMARK: str = "customer-support-triage-v1"
+TASKS: List[str] = ["task1", "task2", "task3"]
 
-SYSTEM_PROMPT = """You are an expert customer support agent AI. You will receive customer support tickets and must process them using structured actions.
+# ── Structured Logging ───────────────────────────────────────────────────────
+def log_start(task: str, env: str, model: str) -> None:
+    print(f"[START] task={task} env={env} model={model}", flush=True)
 
-For each ticket, respond with a JSON object using this exact format:
-{
-  "action_type": "<classify|prioritize|route|respond>",
-  "category": "<billing|technical|account|general|feature_request>",   // only for classify
-  "priority": "<urgent|high|medium|low>",                               // only for prioritize
-  "department": "<billing_team|tech_support|account_management|general_support>",  // only for route
-  "response_text": "<your full customer reply>"                          // only for respond
-}
+def log_step(step: int, action: str, reward: float, done: bool, error: Optional[str]) -> None:
+    error_val = error if error else "null"
+    done_val = str(done).lower()
+    action_safe = str(action).replace("\n", " ")[:80]
+    print(f"[STEP] step={step} action={action_safe} reward={reward:.2f} done={done_val} error={error_val}", flush=True)
 
-Rules:
-- For task1: use action_type="classify" for each ticket
-- For task2: first use action_type="prioritize", then "route" for each ticket  
-- For task3: use "classify", then "prioritize", then "route", then "respond" for each ticket
-- Always output ONLY valid JSON — no explanation, no markdown, no extra text
-- For responses: be professional, empathetic, address the specific issue, minimum 80 words for complex tickets
+def log_end(success: bool, steps: int, score: float, rewards: List[float]) -> None:
+    rewards_str = ",".join(f"{r:.2f}" for r in rewards)
+    print(f"[END] success={str(success).lower()} steps={steps} score={score:.3f} rewards={rewards_str}", flush=True)
 
-Category guide:
-- billing: payments, invoices, charges, refunds
-- technical: bugs, API errors, performance, outages  
-- account: login, access, data loss, account settings
-- general: how-to questions, documentation
-- feature_request: requests for new features
+# ── Environment Client ───────────────────────────────────────────────────────
+def env_reset(task_id: str) -> Dict[str, Any]:
+    resp = requests.post(
+        f"{ENV_HOST}/reset",
+        json={"task_id": task_id},
+        timeout=30,
+    )
+    resp.raise_for_status()
+    return resp.json()
 
-Priority guide:
-- urgent: production down, security incident, SLA breach imminent
-- high: significant customer impact, revenue at risk
-- medium: moderate impact, workaround available
-- low: minor, cosmetic, informational
+def env_step(action: Dict[str, Any]) -> Dict[str, Any]:
+    resp = requests.post(
+        f"{ENV_HOST}/step",
+        json=action,
+        timeout=30,
+    )
+    resp.raise_for_status()
+    return resp.json()
 
-Department routing:
-- billing_team → billing/payment issues
-- tech_support → technical/API/bug issues
-- account_management → account, access, upgrade issues
-- general_support → general questions and feature requests
+# ── LLM Agent ────────────────────────────────────────────────────────────────
+SYSTEM_PROMPT = """You are an expert customer support agent AI.
+
+For each ticket, respond with ONLY a valid JSON object — no markdown, no explanation:
+
+For task1 (classify):
+{"action_type": "classify", "category": "<billing|technical|account|general|feature_request>"}
+
+For task2 (prioritize first, then route):
+{"action_type": "prioritize", "priority": "<urgent|high|medium|low>"}
+{"action_type": "route", "department": "<billing_team|tech_support|account_management|general_support>"}
+
+For task3 (classify, prioritize, route, then respond):
+{"action_type": "classify", "category": "<billing|technical|account|general|feature_request>"}
+{"action_type": "prioritize", "priority": "<urgent|high|medium|low>"}
+{"action_type": "route", "department": "<billing_team|tech_support|account_management|general_support>"}
+{"action_type": "respond", "response_text": "<professional reply, min 80 words>"}
+
+Priority guide: urgent=outage/security, high=major impact, medium=moderate, low=minor
+Department guide: billing_team=payments, tech_support=bugs/API, account_management=access/upgrades, general_support=questions
 """
 
-# ---------------------------------------------------------------------------
-# Environment client
-# ---------------------------------------------------------------------------
-
-def env_reset(task_id: str, host: str) -> Dict[str, Any]:
-    resp = requests.post(f"{host}/reset", json={"task_id": task_id}, timeout=30)
-    resp.raise_for_status()
-    return resp.json()
-
-
-def env_step(action: Dict[str, Any], host: str) -> Dict[str, Any]:
-    resp = requests.post(f"{host}/step", json=action, timeout=30)
-    resp.raise_for_status()
-    return resp.json()
-
-
-def env_state(host: str) -> Dict[str, Any]:
-    resp = requests.get(f"{host}/state", timeout=30)
-    resp.raise_for_status()
-    return resp.json()
-
-
-# ---------------------------------------------------------------------------
-# LLM agent
-# ---------------------------------------------------------------------------
-
 def call_llm(client: OpenAI, messages: List[Dict]) -> str:
-    """Call the LLM and return the raw text response."""
-    response = client.chat.completions.create(
-        model=MODEL_NAME,
-        messages=messages,
-        temperature=TEMPERATURE,
-        max_tokens=MAX_TOKENS,
-    )
-    return response.choices[0].message.content or ""
-
+    try:
+        response = client.chat.completions.create(
+            model=MODEL_NAME,
+            messages=messages,
+            temperature=TEMPERATURE,
+            max_tokens=MAX_TOKENS,
+        )
+        return (response.choices[0].message.content or "").strip()
+    except Exception as exc:
+        print(f"[DEBUG] LLM call failed: {exc}", flush=True)
+        return ""
 
 def parse_action(text: str) -> Optional[Dict[str, Any]]:
-    """Parse LLM output into an action dict. Returns None on failure."""
+    if not text:
+        return None
     text = text.strip()
-    # Strip markdown code fences if present
+    # Strip markdown fences
     if text.startswith("```"):
         lines = text.split("\n")
-        text = "\n".join(lines[1:-1] if lines[-1] == "```" else lines[1:])
+        text = "\n".join(lines[1:])
+        if text.endswith("```"):
+            text = text[:-3].strip()
     try:
         return json.loads(text)
     except json.JSONDecodeError:
-        # Try to extract JSON from mixed text
         import re
-        m = re.search(r"\{.*\}", text, re.DOTALL)
+        m = re.search(r"\{.*?\}", text, re.DOTALL)
         if m:
             try:
                 return json.loads(m.group())
@@ -135,227 +125,187 @@ def parse_action(text: str) -> Optional[Dict[str, Any]]:
                 pass
     return None
 
-
-def build_user_message(observation: Dict[str, Any]) -> str:
-    """Format the current observation into a user message for the LLM."""
-    ticket = observation.get("ticket")
-    if ticket is None:
-        return "No more tickets. Episode is done."
-
-    ctx = observation.get("context", {})
-    task_id = observation.get("task_id", "")
-    valid_actions = observation.get("valid_action_types", [])
+def build_prompt(obs: Dict[str, Any]) -> str:
+    ticket = obs.get("ticket")
+    if not ticket:
+        return "No ticket available."
+    task_id = obs.get("task_id", "")
+    ctx = obs.get("context", {})
+    completed = obs.get("completed_actions", [])
+    ticket_id = ticket.get("id", "")
 
     parts = [
-        f"TASK: {observation.get('task_id', '').upper()}",
-        f"Ticket {ctx.get('ticket_number', '?')}/{ctx.get('total_tickets', '?')}",
-        "",
-        f"Subject: {ticket['subject']}",
-        f"Customer tier: {ticket['customer_tier']}",
-        f"SLA hours remaining: {ticket.get('sla_hours', 'N/A')}",
-        f"Message:\n{ticket['body']}",
+        f"TASK: {task_id.upper()}",
+        f"Ticket {ctx.get('ticket_number','?')}/{ctx.get('total_tickets','?')}",
+        f"Subject: {ticket.get('subject','')}",
+        f"Customer tier: {ticket.get('customer_tier','')}",
+        f"SLA hours: {ticket.get('sla_hours','N/A')}",
+        f"Message: {ticket.get('body','')}",
     ]
 
-    if ticket.get("previous_messages"):
-        parts.append("\nPrevious conversation:")
-        for msg in ticket["previous_messages"]:
-            parts.append(f"  {msg}")
+    prev = ticket.get("previous_messages", [])
+    if prev:
+        parts.append("History: " + " | ".join(prev))
 
     if ctx.get("pre_filled_category"):
-        parts.append(f"\n[Pre-filled] Category: {ctx['pre_filled_category']}")
+        parts.append(f"Category already set: {ctx['pre_filled_category']}")
 
-    parts.append(f"\nValid actions: {valid_actions}")
-    parts.append(f"Score so far: {observation.get('score_so_far', 0):.3f}")
+    done_actions = [a.split("] ")[1] for a in completed if ticket_id in a]
 
     if task_id == "task1":
-        parts.append("\nYour action: classify this ticket.")
+        parts.append("ACTION NEEDED: classify this ticket. Output JSON with action_type=classify")
     elif task_id == "task2":
-        completed = observation.get("completed_actions", [])
-        ticket_id = ticket["id"]
-        has_priority = any(ticket_id in a and "prioritize" in a for a in completed)
-        if not has_priority:
-            parts.append("\nYour action: prioritize this ticket (action_type=prioritize).")
+        if "prioritize" not in done_actions:
+            parts.append("ACTION NEEDED: prioritize this ticket. Output JSON with action_type=prioritize")
         else:
-            parts.append("\nYour action: route this ticket (action_type=route).")
+            parts.append("ACTION NEEDED: route this ticket. Output JSON with action_type=route")
     elif task_id == "task3":
-        completed = observation.get("completed_actions", [])
-        ticket_id = ticket["id"]
-        done_actions = [a.split("] ")[1] for a in completed if ticket_id in a]
         if "classify" not in done_actions:
-            parts.append("\nYour action: classify (action_type=classify).")
+            parts.append("ACTION NEEDED: classify. Output JSON with action_type=classify")
         elif "prioritize" not in done_actions:
-            parts.append("\nYour action: prioritize (action_type=prioritize).")
+            parts.append("ACTION NEEDED: prioritize. Output JSON with action_type=prioritize")
         elif "route" not in done_actions:
-            parts.append("\nYour action: route (action_type=route).")
+            parts.append("ACTION NEEDED: route. Output JSON with action_type=route")
         else:
-            parts.append("\nYour action: write a full customer response (action_type=respond).")
+            parts.append("ACTION NEEDED: respond with a professional, empathetic reply (min 80 words). Output JSON with action_type=respond and response_text")
 
     return "\n".join(parts)
 
+def fallback_action(obs: Dict[str, Any]) -> Dict[str, Any]:
+    """Return a safe default action if LLM fails."""
+    task_id = obs.get("task_id", "task1")
+    completed = obs.get("completed_actions", [])
+    ticket = obs.get("ticket", {})
+    ticket_id = ticket.get("id", "") if ticket else ""
+    done_actions = [a.split("] ")[1] for a in completed if ticket_id in a]
 
-# ---------------------------------------------------------------------------
-# Episode runner
-# ---------------------------------------------------------------------------
+    if task_id == "task1":
+        return {"action_type": "classify", "category": "general"}
+    elif task_id == "task2":
+        if "prioritize" not in done_actions:
+            return {"action_type": "prioritize", "priority": "medium"}
+        return {"action_type": "route", "department": "general_support"}
+    elif task_id == "task3":
+        if "classify" not in done_actions:
+            return {"action_type": "classify", "category": "general"}
+        elif "prioritize" not in done_actions:
+            return {"action_type": "prioritize", "priority": "medium"}
+        elif "route" not in done_actions:
+            return {"action_type": "route", "department": "general_support"}
+        else:
+            return {"action_type": "respond", "response_text": "Thank you for contacting us. We understand your concern and will investigate this matter promptly. Our team will review your case and get back to you as soon as possible. We apologize for any inconvenience caused and appreciate your patience. Please let us know if you need any further assistance."}
+    return {"action_type": "skip"}
 
-def run_episode(task_id: str, client: OpenAI, host: str) -> Dict[str, Any]:
-    """Run one complete episode and return summary stats."""
-    print(f"\n{'='*60}")
-    print(f"  Running task: {task_id.upper()}")
-    print(f"{'='*60}")
+# ── Episode Runner ────────────────────────────────────────────────────────────
+def run_episode(task_id: str, client: OpenAI) -> None:
+    rewards: List[float] = []
+    steps_taken = 0
+    score = 0.0
+    success = False
 
-    obs = env_reset(task_id, host)
-    messages = [{"role": "system", "content": SYSTEM_PROMPT}]
+    log_start(task=task_id, env=BENCHMARK, model=MODEL_NAME)
 
-    total_reward = 0.0
-    step = 0
-    final_grader_score = None
-    action_results = []
+    try:
+        obs = env_reset(task_id)
+        messages = [{"role": "system", "content": SYSTEM_PROMPT}]
 
-    while step < MAX_STEPS:
-        if obs.get("ticket") is None:
-            print("  No more tickets — episode complete.")
-            break
+        for step in range(1, MAX_STEPS + 1):
+            if not obs.get("ticket"):
+                break
 
-        user_msg = build_user_message(obs)
-        messages.append({"role": "user", "content": user_msg})
+            user_msg = build_prompt(obs)
+            messages.append({"role": "user", "content": user_msg})
 
-        print(f"\n  Step {step + 1}: Ticket {obs.get('context', {}).get('ticket_number', '?')}"
-              f" — {obs.get('ticket', {}).get('subject', '')[:50]}...")
+            raw = call_llm(client, messages)
+            messages.append({"role": "assistant", "content": raw or "null"})
 
-        # Get LLM action
-        raw_response = call_llm(client, messages)
-        messages.append({"role": "assistant", "content": raw_response})
+            action = parse_action(raw)
+            if action is None:
+                action = fallback_action(obs)
 
-        action = parse_action(raw_response)
-        if action is None:
-            print(f"  ⚠ Failed to parse LLM response: {raw_response[:100]}")
-            action = {"action_type": "skip"}
+            action_str = f"{action.get('action_type','?')}:{action.get('category', action.get('priority', action.get('department', action.get('response_text','')[:20] if action.get('response_text') else '')))}"
 
-        print(f"  Action: {action.get('action_type')} "
-              f"{action.get('category', action.get('priority', action.get('department', '')))}")
+            try:
+                result = env_step(action)
+                reward = float(result.get("reward", {}).get("value", 0.0))
+                done = bool(result.get("done", False))
+                error = None
+                obs = result.get("observation", obs)
+            except Exception as e:
+                reward = 0.0
+                done = True
+                error = str(e)[:80]
 
-        # Execute action
-        result = env_step(action, host)
-        reward_val = result.get("reward", {}).get("value", 0.0)
-        reason = result.get("reward", {}).get("reason", "")
-        total_reward += reward_val
-        step += 1
+            rewards.append(reward)
+            steps_taken = step
 
-        print(f"  Reward: {reward_val:+.4f}  |  {reason}")
+            log_step(step=step, action=action_str, reward=reward, done=done, error=error)
 
-        action_results.append({
-            "step": step,
-            "action_type": action.get("action_type"),
-            "reward": reward_val,
-            "reason": reason,
-        })
+            if done:
+                # Extract grader score
+                info = result.get("info", {}) if "result" in dir() else {}
+                grader = info.get("grader_result", {})
+                score = float(grader.get("score", sum(rewards)))
+                score = min(max(score, 0.0), 1.0)
+                break
 
-        # Check terminal
-        if result.get("done"):
-            grader_result = result.get("info", {}).get("grader_result", {})
-            final_grader_score = grader_result.get("score", None)
-            if final_grader_score is not None:
-                print(f"\n  ✅ Episode done. Grader score: {final_grader_score:.4f}")
-            break
+            time.sleep(0.05)
 
-        obs = result["observation"]
-        time.sleep(0.1)  # small pause to avoid rate limiting
+        if not rewards:
+            score = 0.0
+        elif score == 0.0:
+            score = min(max(sum(rewards), 0.0), 1.0)
 
-    # Fallback: get score from state
-    if final_grader_score is None:
-        state = env_state(host)
-        final_grader_score = state.get("grader_scores", {}).get("final", None)
+        success = score >= SUCCESS_THRESHOLD
 
-    return {
-        "task_id": task_id,
-        "steps": step,
-        "total_reward": round(total_reward, 4),
-        "grader_score": final_grader_score,
-        "action_results": action_results,
-    }
+    except Exception as e:
+        print(f"[DEBUG] Episode error: {e}", flush=True)
+        score = 0.0
+        success = False
+        if steps_taken == 0:
+            steps_taken = 1
+            rewards = [0.0]
+            log_step(step=1, action="error", reward=0.0, done=True, error=str(e)[:80])
 
+    finally:
+        log_end(success=success, steps=steps_taken, score=score, rewards=rewards if rewards else [0.0])
 
-# ---------------------------------------------------------------------------
-# Main
-# ---------------------------------------------------------------------------
-
+# ── Main ─────────────────────────────────────────────────────────────────────
 def main():
-    parser = argparse.ArgumentParser(description="Customer Support Triage — OpenEnv Baseline")
-    parser.add_argument("--task", default="all", help="task1 | task2 | task3 | all")
-    parser.add_argument("--host", default=ENV_HOST, help="Environment host URL")
-    args = parser.parse_args()
-
-    # Validate environment variables
+    # Validate env vars
     if not HF_TOKEN:
-        print("⚠ Warning: HF_TOKEN not set. LLM calls may fail.")
-    if not API_BASE_URL:
-        print("⚠ Warning: API_BASE_URL not set. Using OpenAI default.")
+        print("[DEBUG] Warning: HF_TOKEN not set", flush=True)
 
-    # Initialize OpenAI client
+    # Init OpenAI client
     client = OpenAI(
         api_key=HF_TOKEN or "placeholder",
         base_url=API_BASE_URL,
     )
 
-    # Health check
-    try:
-        resp = requests.get(f"{args.host}/health", timeout=10)
-        resp.raise_for_status()
-        print(f"✅ Environment healthy: {resp.json()}")
-    except Exception as e:
-        print(f"❌ Environment not reachable at {args.host}: {e}")
-        sys.exit(1)
-
-    # Determine tasks to run
-    tasks_to_run = ["task1", "task2", "task3"] if args.task == "all" else [args.task]
-
-    # Run episodes
-    results = []
-    start_time = time.time()
-
-    for task_id in tasks_to_run:
+    # Health check with retries
+    for attempt in range(5):
         try:
-            result = run_episode(task_id, client, args.host)
-            results.append(result)
+            resp = requests.get(f"{ENV_HOST}/health", timeout=10)
+            if resp.status_code == 200:
+                print(f"[DEBUG] Environment healthy: {resp.json()}", flush=True)
+                break
         except Exception as e:
-            print(f"❌ Task {task_id} failed: {e}")
-            results.append({"task_id": task_id, "error": str(e), "grader_score": 0.0})
+            print(f"[DEBUG] Health check attempt {attempt+1} failed: {e}", flush=True)
+            time.sleep(3)
+    else:
+        print("[DEBUG] Environment not reachable — running anyway", flush=True)
 
-    elapsed = time.time() - start_time
+    # Run all 3 tasks
+    for task_id in TASKS:
+        try:
+            run_episode(task_id, client)
+        except Exception as e:
+            print(f"[DEBUG] Task {task_id} crashed: {e}", flush=True)
+            log_start(task=task_id, env=BENCHMARK, model=MODEL_NAME)
+            log_step(step=1, action="error", reward=0.0, done=True, error=str(e)[:80])
+            log_end(success=False, steps=1, score=0.0, rewards=[0.0])
 
-    # Summary
-    print(f"\n{'='*60}")
-    print("  BASELINE SCORES SUMMARY")
-    print(f"{'='*60}")
-    for r in results:
-        score = r.get("grader_score", "N/A")
-        score_str = f"{score:.4f}" if isinstance(score, float) else str(score)
-        steps = r.get("steps", "N/A")
-        err = r.get("error", "")
-        status = "❌ ERROR" if err else "✅"
-        print(f"  {status} {r['task_id']:8s}  grader_score={score_str:6s}  steps={steps}")
-        if err:
-            print(f"           error: {err}")
-
-    print(f"\n  Total time: {elapsed:.1f}s")
-    print(f"  Model: {MODEL_NAME}")
-    print(f"  API: {API_BASE_URL}")
-    print(f"{'='*60}\n")
-
-    # Save results to JSON
-    output_path = "baseline_results.json"
-    with open(output_path, "w") as f:
-        json.dump(
-            {
-                "model": MODEL_NAME,
-                "api_base_url": API_BASE_URL,
-                "elapsed_seconds": round(elapsed, 2),
-                "results": results,
-            },
-            f,
-            indent=2,
-        )
-    print(f"Results saved to {output_path}")
+        time.sleep(1)
 
 
 if __name__ == "__main__":
